@@ -5,7 +5,7 @@
 ![FinRL](https://img.shields.io/badge/FinRL-Supported-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-A robust, fully-automated Deep Reinforcement Learning (DRL) quantitative trading framework. This project implements the **Soft Actor-Critic (SAC)** algorithm to dynamically manage a portfolio of Dow Jones 30 (DJIA) constituent stocks, achieving positive Alpha during the 2021-2023 bear market.
+A robust, fully-automated Deep Reinforcement Learning (DRL) quantitative trading framework. This project implements the **DDPG**, **SAC**, **PPO** algorithm to dynamically manage a portfolio of Dow Jones 30 (DJIA) constituent stocks, achieving positive Alpha during the 2021-2023 bear market.
 
 ## 🌟 Key Features & Technical Highlights
 
