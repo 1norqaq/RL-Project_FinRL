@@ -85,7 +85,7 @@ class ElegantFinRLWrapper(gym.Wrapper):
 
         # 记录上一次的动作，用于计算调仓惩罚 (Action Penalty)
         self.prev_action = np.zeros(action_dim)
-        self.penalty_coef = 0.05
+        self.penalty_coef = 0
 
     def reset(self):
         self.prev_action = np.zeros(self.action_dim)
