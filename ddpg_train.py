@@ -1,5 +1,8 @@
 # ddpg_train.py
 import os
+import glob
+import time
+import random
 import pandas as pd
 import numpy as np
 import torch
@@ -27,6 +30,8 @@ original_download = yf.download
 
 def patched_download(*args, **kwargs):
     kwargs.pop("proxy", None)
+    kwargs.setdefault("auto_adjust", False)
+    kwargs.setdefault("progress", False)
     return original_download(*args, **kwargs)
 
 
@@ -35,6 +40,8 @@ yf.download = patched_download
 # -----------------------------
 # Imports from FinRL + ElegantRL
 # -----------------------------
+from finrl.meta.preprocessor.yahoodownloader import YahooDownloader
+from finrl.config_tickers import DOW_30_TICKER
 from finrl.meta.env_stock_trading.env_stocktrading import StockTradingEnv
 from elegantrl.train.run import train_agent
 
@@ -114,11 +121,11 @@ class ElegantFinRLWrapper(gym.Wrapper):
         except TypeError:
             res = self.env.reset()
         if isinstance(res, tuple) and len(res) == 2:
-            obs, info = res
+            obs, _info = res
         else:
             obs = res
-            info = {}
-        return np.array(obs, dtype=np.float32), info
+        # ElegantRL off-policy trainers expect Gym-style reset() -> obs (not tuple).
+        return np.array(obs, dtype=np.float32)
 
     def step(self, action):
         action = np.asarray(action, dtype=np.float32)
@@ -131,12 +138,13 @@ class ElegantFinRLWrapper(gym.Wrapper):
 
         if len(res) == 5:
             obs, reward, term, trunc, info = res
-            modified_reward = float(reward) - float(penalty)
-            return np.array(obs, dtype=np.float32), modified_reward, term, trunc, info
+            done = bool(term or trunc)
         else:
             obs, reward, done, info = res
-            modified_reward = float(reward) - float(penalty)
-            return np.array(obs, dtype=np.float32), modified_reward, done, False, info
+            done = bool(done)
+        modified_reward = float(reward) - float(penalty)
+        # ElegantRL off-policy trainers expect Gym-style step() -> (obs, reward, done, info).
+        return np.array(obs, dtype=np.float32), modified_reward, done, info
 
 
 # -----------------------------
@@ -145,22 +153,316 @@ class ElegantFinRLWrapper(gym.Wrapper):
 DEFAULT_INDICATORS = ["macd", "boll_ub", "boll_lb", "rsi_30", "cci_30", "dx_30", "close_30", "close_60"]
 
 
-def prepare_data():
-    cache_file = "finrl_dow30_cache.csv"
-    if os.path.exists(cache_file):
-        print(f"[INFO] Loading validated cache '{cache_file}'...")
-        df = pd.read_csv(cache_file)
-        required_columns = {"date", "tic", "open", "high", "low", "close", "volume", *DEFAULT_INDICATORS}
-        if required_columns.issubset(df.columns):
-            return df.drop_duplicates(subset=["date", "tic"])
+def _load_if_valid_cache(csv_path):
+    if not os.path.exists(csv_path):
+        return None
+    try:
+        df = pd.read_csv(csv_path)
+    except Exception:
+        return None
 
-        missing_columns = sorted(required_columns.difference(df.columns))
-        raise ValueError(
-            f"Cache file '{cache_file}' is missing required columns: {missing_columns}. "
-            "Please regenerate or replace the cache file."
+    required_columns = {"date", "tic", "open", "high", "low", "close", "volume", *DEFAULT_INDICATORS}
+    if not required_columns.issubset(df.columns):
+        return None
+    if df.empty:
+        return None
+    return df.drop_duplicates(subset=["date", "tic"]).sort_values(["date", "tic"]).reset_index(drop=True)
+
+
+def _discover_existing_cache(preferred_cache_file):
+    candidates = [
+        preferred_cache_file,
+        "finrl_dow30_cache.csv",
+        os.path.join("data", "finrl_dow30_cache.csv"),
+        os.path.join("..", "data", "finrl_dow30_cache.csv"),
+    ]
+
+    for candidate in candidates:
+        df = _load_if_valid_cache(candidate)
+        if df is not None:
+            print(f"[INFO] Loading validated cache '{candidate}'...")
+            return df
+
+    search_roots = [os.getcwd(), os.path.abspath(os.path.join(os.getcwd(), ".."))]
+    seen = set()
+    for root in search_roots:
+        pattern = os.path.join(root, "**", "finrl_dow30_cache.csv")
+        for match in glob.glob(pattern, recursive=True):
+            norm = os.path.normpath(match)
+            if norm in seen:
+                continue
+            seen.add(norm)
+            df = _load_if_valid_cache(norm)
+            if df is not None:
+                print(f"[INFO] Loading validated cache '{norm}'...")
+                return df
+    return None
+
+
+def _compute_indicators_with_pandas(df):
+    frames = []
+    for _, ticker_df in df.groupby("tic", sort=False):
+        ticker_df = ticker_df.sort_values("date").copy()
+        close = ticker_df["close"]
+        high = ticker_df["high"]
+        low = ticker_df["low"]
+
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd_line = ema12 - ema26
+        macd_signal = macd_line.ewm(span=9, adjust=False).mean()
+        ticker_df["macd"] = macd_line - macd_signal
+
+        mid = close.rolling(window=20, min_periods=20).mean()
+        std = close.rolling(window=20, min_periods=20).std(ddof=0)
+        ticker_df["boll_ub"] = mid + 2.0 * std
+        ticker_df["boll_lb"] = mid - 2.0 * std
+
+        delta = close.diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.rolling(window=30, min_periods=30).mean()
+        avg_loss = loss.rolling(window=30, min_periods=30).mean().replace(0, np.nan)
+        rs = avg_gain / avg_loss
+        ticker_df["rsi_30"] = 100 - (100 / (1 + rs))
+
+        tp = (high + low + close) / 3
+        tp_ma = tp.rolling(window=30, min_periods=30).mean()
+        mad = tp.rolling(window=30, min_periods=30).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True)
+        ticker_df["cci_30"] = (tp - tp_ma) / (0.015 * mad.replace(0, np.nan))
+
+        up_move = high.diff()
+        down_move = low.shift(1) - low
+        plus_dm = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=ticker_df.index)
+        minus_dm = pd.Series(np.where((down_move > up_move) & (down_move > 0), down_move, 0.0), index=ticker_df.index)
+
+        tr = pd.concat(
+            [
+                (high - low),
+                (high - close.shift(1)).abs(),
+                (low - close.shift(1)).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        atr = tr.rolling(window=30, min_periods=30).mean().replace(0, np.nan)
+        plus_di = 100 * plus_dm.rolling(window=30, min_periods=30).mean() / atr
+        minus_di = 100 * minus_dm.rolling(window=30, min_periods=30).mean() / atr
+        ticker_df["dx_30"] = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+
+        ticker_df["close_30"] = close.rolling(window=30, min_periods=30).mean()
+        ticker_df["close_60"] = close.rolling(window=60, min_periods=60).mean()
+
+        frames.append(ticker_df)
+
+    result = pd.concat(frames, ignore_index=True)
+    return result
+
+
+def _normalize_single_ticker_frame(frame, tic):
+    if frame is None or frame.empty:
+        return None
+
+    if isinstance(frame.columns, pd.MultiIndex):
+        try:
+            frame = frame.xs(tic, axis=1, level=0, drop_level=True)
+        except Exception:
+            try:
+                frame = frame.xs(tic, axis=1, level=-1, drop_level=True)
+            except Exception:
+                return None
+
+    frame = frame.copy().reset_index()
+
+    if "Date" in frame.columns:
+        frame = frame.rename(columns={"Date": "date"})
+    elif "index" in frame.columns:
+        frame = frame.rename(columns={"index": "date"})
+    elif "Datetime" in frame.columns:
+        frame = frame.rename(columns={"Datetime": "date"})
+    else:
+        return None
+
+    rename_map = {}
+    for col in frame.columns:
+        col_str = str(col).strip()
+        if col_str == "Open":
+            rename_map[col] = "open"
+        elif col_str == "High":
+            rename_map[col] = "high"
+        elif col_str == "Low":
+            rename_map[col] = "low"
+        elif col_str == "Close":
+            rename_map[col] = "close"
+        elif col_str == "Adj Close":
+            rename_map[col] = "adj_close"
+        elif col_str == "Volume":
+            rename_map[col] = "volume"
+    frame = frame.rename(columns=rename_map)
+
+    if "close" not in frame.columns and "adj_close" in frame.columns:
+        frame["close"] = frame["adj_close"]
+
+    needed = {"date", "open", "high", "low", "close", "volume"}
+    if not needed.issubset(frame.columns):
+        return None
+
+    frame["tic"] = tic
+    frame["date"] = pd.to_datetime(frame["date"]).dt.strftime("%Y-%m-%d")
+    return frame[["date", "open", "high", "low", "close", "volume", "tic"]]
+
+
+def _download_with_yfinance(ticker_list, start_date, end_date, single_retries=3):
+    frames_by_ticker = {}
+    missing = list(ticker_list)
+
+    try:
+        batch = yf.download(
+            tickers=ticker_list,
+            start=start_date,
+            end=end_date,
+            auto_adjust=False,
+            progress=False,
+            group_by="ticker",
+            threads=False,
+        )
+    except Exception as exc:
+        batch = None
+        print(f"[WARN] Batch yfinance download failed ({exc}).")
+
+    if batch is not None and not batch.empty:
+        for tic in ticker_list:
+            try:
+                candidate = _normalize_single_ticker_frame(batch, tic)
+            except Exception:
+                candidate = None
+            if candidate is not None and not candidate.empty:
+                frames_by_ticker[tic] = candidate
+        missing = [tic for tic in ticker_list if tic not in frames_by_ticker]
+
+    if missing:
+        print(f"[WARN] Batch download missed {len(missing)} tickers. Retrying individually with backoff...")
+
+    for tic in list(missing):
+        got = None
+        for attempt in range(1, single_retries + 1):
+            try:
+                single = yf.download(
+                    tic,
+                    start=start_date,
+                    end=end_date,
+                    auto_adjust=False,
+                    progress=False,
+                    threads=False,
+                )
+                got = _normalize_single_ticker_frame(single, tic)
+            except Exception:
+                got = None
+
+            if got is not None and not got.empty:
+                frames_by_ticker[tic] = got
+                break
+
+            if attempt < single_retries:
+                wait_s = min(45, 6 * attempt + random.randint(0, 4))
+                print(f"[INFO] Retry {attempt + 1}/{single_retries} for {tic} after {wait_s}s...")
+                time.sleep(wait_s)
+
+    if not frames_by_ticker:
+        raise RuntimeError(
+            "yfinance download failed for all tickers (likely Yahoo rate limit). "
+            "Please wait and retry, or place an existing finrl_dow30_cache.csv in ./data."
         )
 
-    return None
+    data = pd.concat(frames_by_ticker.values(), ignore_index=True).sort_values(["date", "tic"]).reset_index(drop=True)
+    failed = [tic for tic in ticker_list if tic not in frames_by_ticker]
+    if failed:
+        preview = ", ".join(failed[:10]) + (", ..." if len(failed) > 10 else "")
+        print(f"[WARN] Proceeding with {len(frames_by_ticker)} tickers; missing {len(failed)}: {preview}")
+    else:
+        print(f"[INFO] Downloaded all {len(frames_by_ticker)} tickers.")
+    print(f"[INFO] yfinance rows: {len(data)}")
+    return data
+
+
+def prepare_data(
+    cache_file="./data/finrl_dow30_cache.csv",
+    TRAIN_START_DATE="2010-01-01",
+    TEST_END_DATE="2023-12-30",
+):
+    cache_dir = os.path.dirname(cache_file)
+    if cache_dir:
+        os.makedirs(cache_dir, exist_ok=True)
+
+    cached_df = _discover_existing_cache(cache_file)
+    if cached_df is not None:
+        return cached_df
+
+    print(f"[INFO] Downloading Dow 30 data from {TRAIN_START_DATE} to {TEST_END_DATE}...")
+    df = None
+    try:
+        df = YahooDownloader(
+            start_date=TRAIN_START_DATE,
+            end_date=TEST_END_DATE,
+            ticker_list=DOW_30_TICKER,
+        ).fetch_data()
+    except Exception as exc:
+        print(f"[WARN] FinRL YahooDownloader failed ({exc}). Falling back to direct yfinance downloader...")
+        df = None
+
+    base_cols = {"date", "tic", "open", "high", "low", "close", "volume"}
+    if df is None or df.empty or not base_cols.issubset(df.columns):
+        print("[WARN] FinRL YahooDownloader returned unusable data. Falling back to direct yfinance downloader...")
+        df = _download_with_yfinance(DOW_30_TICKER, TRAIN_START_DATE, TEST_END_DATE)
+
+    technical_indicators = [
+        "macd",
+        "boll_ub",
+        "boll_lb",
+        "rsi_30",
+        "cci_30",
+        "dx_30",
+        "close_30_sma",
+        "close_60_sma",
+    ]
+    try:
+        from finrl.meta.preprocessor.preprocessors import FeatureEngineer
+
+        fe = FeatureEngineer(
+            use_technical_indicator=True,
+            tech_indicator_list=technical_indicators,
+            use_vix=False,
+            use_turbulence=False,
+            user_defined_feature=False,
+        )
+        df = fe.preprocess_data(df)
+
+        if "close_30_sma" in df.columns:
+            df = df.rename(columns={"close_30_sma": "close_30"})
+        if "close_60_sma" in df.columns:
+            df = df.rename(columns={"close_60_sma": "close_60"})
+    except Exception as exc:
+        print(f"[WARN] FeatureEngineer unavailable ({exc}). Falling back to pandas indicators...")
+        df = _compute_indicators_with_pandas(df)
+
+    required_columns = {"date", "tic", "open", "high", "low", "close", "volume", *DEFAULT_INDICATORS}
+    missing_columns = sorted(required_columns.difference(df.columns))
+    if missing_columns:
+        raise ValueError(
+            f"Generated cache is missing required columns: {missing_columns}. "
+            "Please verify FinRL FeatureEngineer output."
+        )
+
+    df = df.dropna(subset=DEFAULT_INDICATORS)
+    df = df.drop_duplicates(subset=["date", "tic"]).sort_values(["date", "tic"]).reset_index(drop=True)
+    ticker_count = df["tic"].nunique()
+    if ticker_count < 20:
+        raise RuntimeError(
+            f"Only {ticker_count} tickers available after preprocessing. "
+            "This is too low for a stable Dow-30 training run; likely caused by Yahoo rate limits."
+        )
+    df.to_csv(cache_file, index=False)
+    print(f"[INFO] Cache saved to '{cache_file}' ({len(df)} rows).")
+    return df
 
 
 # -----------------------------
@@ -184,7 +486,12 @@ def setup_ddpg_args(env_args, cwd_path):
 
     args.worker_num = 1
     args.eval_proc_num = 0
-    args.eval_gap = 1000
+    args.if_use_multi_processing = False
+    args.eval_gap = 500
+    args.save_gap = 500
+
+    args.if_save = True
+    args.if_overwrite_save = True
 
     args.cwd = cwd_path
     args.if_remove = True
@@ -215,6 +522,13 @@ def real_test_inference(test_df, stock_dim, indicators, args):
     }
     env = ElegantFinRLWrapper(**params)
 
+    checkpoint_files = [f for f in os.listdir(args.cwd) if f.lower().endswith(".pth")]
+    if not checkpoint_files:
+        raise FileNotFoundError(
+            f"No checkpoint files were found in '{args.cwd}' after training. "
+            "Training likely ended before any model was saved."
+        )
+
     agent = AgentDDPG(args.net_dims, args.state_dim, args.action_dim)
     agent.save_or_load_agent(args.cwd, if_save=False)
     agent.act.eval()
@@ -233,7 +547,7 @@ def real_test_inference(test_df, stock_dim, indicators, args):
             state, reward, term, trunc, _ = step_res
             done = term or trunc
         else:
-            state, reward, done, _, _ = step_res
+            state, reward, done, _ = step_res
 
     return env.env.save_asset_memory()
 
@@ -245,8 +559,8 @@ if __name__ == "__main__":
     df_raw = prepare_data()
     if df_raw is None or df_raw.empty:
         raise FileNotFoundError(
-            "Could not load 'finrl_dow30_cache.csv'. "
-            "Please ensure the cache file exists in the current working directory."
+            "Could not load cache file. "
+            "Expected either './finrl_dow30_cache.csv' or './data/finrl_dow30_cache.csv'."
         )
 
     # Keep only dates where all tickers have data
@@ -261,6 +575,13 @@ if __name__ == "__main__":
     TRAIN_WINDOW = 252
     VAL_WINDOW = 20
     TEST_WINDOW = 20
+
+    min_required_days = TRAIN_WINDOW + VAL_WINDOW + TEST_WINDOW
+    if len(unique_dates) < min_required_days:
+        raise RuntimeError(
+            f"Insufficient aligned trading days after preprocessing: {len(unique_dates)} found, "
+            f"but at least {min_required_days} are required."
+        )
 
     all_test_results = []
 
@@ -322,3 +643,5 @@ if __name__ == "__main__":
     if all_test_results:
         pd.concat(all_test_results).reset_index(drop=True).to_csv("ddpg_rolling_results_v2.csv", index=False)
         print("\n[SUCCESS] Backtest V2 complete! File saved as ddpg_rolling_results_v2.csv")
+    else:
+        raise RuntimeError("All rolling windows failed; no backtest results were produced.")

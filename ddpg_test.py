@@ -1,4 +1,5 @@
 # ddpg_test.py
+import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import yfinance as yf
@@ -29,7 +30,19 @@ def main():
     result_file = "ddpg_rolling_results_v2.csv"
 
     try:
+        if not os.path.exists(result_file):
+            raise FileNotFoundError(
+                f"Result file '{result_file}' not found. Run ddpg_train.py first."
+            )
+
         df = pd.read_csv(result_file)
+        required_columns = {"date", "account_value"}
+        missing_columns = sorted(required_columns.difference(df.columns))
+        if missing_columns:
+            raise ValueError(
+                f"Result file '{result_file}' is missing required columns: {missing_columns}"
+            )
+
         df["date"] = pd.to_datetime(df["date"])
         df = df.drop_duplicates(subset=["date"]).sort_values("date").reset_index(drop=True)
 
@@ -41,7 +54,7 @@ def main():
         print(f"[*] Successfully loaded AI trading records! Testing period: {start_date} to {end_date}")
         print("[*] Downloading Dow Jones Index as benchmark...")
 
-        benchmark = yf.download("^DJI", start=start_date, end=benchmark_end, progress=False)
+        benchmark = yf.download("^DJI", start=start_date, end=benchmark_end, auto_adjust=False, progress=False)
         if benchmark.empty:
             raise ValueError("Benchmark download returned no rows for ^DJI.")
 
@@ -55,6 +68,9 @@ def main():
             benchmark = benchmark.rename(columns={"index": "Date"})
 
         benchmark["Date"] = pd.to_datetime(benchmark["Date"])
+
+        if "Close" not in benchmark.columns:
+            raise ValueError("Benchmark dataframe does not contain a 'Close' column.")
 
         # Merge and forward-fill benchmark close
         df = pd.merge(df, benchmark[["Date", "Close"]], left_on="date", right_on="Date", how="left")
