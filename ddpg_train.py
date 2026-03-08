@@ -1,4 +1,5 @@
 # ddpg_train.py
+import argparse
 import os
 import glob
 import time
@@ -83,6 +84,7 @@ class ElegantFinRLWrapper(gym.Wrapper):
         action_dim,
         if_discrete,
         target_return,
+        penalty_coef=0.05,
         **kwargs,
     ):
         buy_cost_list = buy_cost_pct if isinstance(buy_cost_pct, list) else [0.001] * stock_dim
@@ -112,7 +114,7 @@ class ElegantFinRLWrapper(gym.Wrapper):
 
         self.prev_action = np.zeros(action_dim, dtype=np.float32)
 
-        self.penalty_coef = 0.05
+        self.penalty_coef = float(penalty_coef)
 
     def reset(self, *, seed=None, options=None):
         self.prev_action = np.zeros(self.action_dim, dtype=np.float32)
@@ -468,21 +470,31 @@ def prepare_data(
 # -----------------------------
 # ElegantRL args for DDPG
 # -----------------------------
-def setup_ddpg_args(env_args, cwd_path):
+def setup_ddpg_args(
+    env_args,
+    cwd_path,
+    *,
+    net_dims=(128, 64),
+    learning_rate=1e-4,
+    batch_size=128,
+    target_step=2000,
+    break_step=40000,
+    if_remove=True,
+):
     args = Arguments(agent_class=AgentDDPG, env_class=ElegantFinRLWrapper)
     args.env_args = env_args
     args.env_name = env_args["env_name"]
 
-    args.net_dims = (128, 64)
+    args.net_dims = tuple(net_dims)
     args.state_dim = env_args["state_dim"]
     args.action_dim = env_args["action_dim"]
     args.if_discrete = env_args["if_discrete"]
 
-    args.learning_rate = 1e-4
-    args.batch_size = 128
+    args.learning_rate = float(learning_rate)
+    args.batch_size = int(batch_size)
 
-    args.target_step = 2000
-    args.break_step = 40000
+    args.target_step = int(target_step)
+    args.break_step = int(break_step)
 
     args.worker_num = 1
     args.eval_proc_num = 0
@@ -494,19 +506,19 @@ def setup_ddpg_args(env_args, cwd_path):
     args.if_overwrite_save = True
 
     args.cwd = cwd_path
-    args.if_remove = True
+    args.if_remove = bool(if_remove)
     return args
 
 
 # -----------------------------
 # Inference on a test window
 # -----------------------------
-def real_test_inference(test_df, stock_dim, indicators, args):
+def real_test_inference(test_df, stock_dim, indicators, args, *, initial_amount=1000000, penalty_coef=0.05):
     params = {
         "df": test_df,
         "stock_dim": stock_dim,
         "hmax": 100,
-        "initial_amount": 1000000,
+        "initial_amount": initial_amount,
         "num_stock_shares": [0] * stock_dim,
         "buy_cost_pct": [0.001] * stock_dim,
         "sell_cost_pct": [0.001] * stock_dim,
@@ -519,6 +531,7 @@ def real_test_inference(test_df, stock_dim, indicators, args):
         "action_dim": stock_dim,
         "if_discrete": False,
         "target_return": 10.0,
+        "penalty_coef": penalty_coef,
     }
     env = ElegantFinRLWrapper(**params)
 
@@ -552,11 +565,60 @@ def real_test_inference(test_df, stock_dim, indicators, args):
     return env.env.save_asset_memory()
 
 
+def parse_net_dims(text):
+    parts = [p.strip() for p in str(text).split(",") if p.strip()]
+    if not parts:
+        raise ValueError("net_dims cannot be empty.")
+    dims = tuple(int(p) for p in parts)
+    if any(d <= 0 for d in dims):
+        raise ValueError(f"net_dims must be positive integers, got: {dims}")
+    return dims
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="DDPG rolling-window trainer (FinRL + ElegantRL)")
+    parser.add_argument("--cache-file", type=str, default="./data/finrl_dow30_cache.csv")
+    parser.add_argument("--train-start", type=str, default="2010-01-01")
+    parser.add_argument("--test-end", type=str, default="2023-12-30")
+
+    parser.add_argument("--train-window", type=int, default=252)
+    parser.add_argument("--val-window", type=int, default=20)
+    parser.add_argument("--test-window", type=int, default=20)
+    parser.add_argument("--max-windows", type=int, default=0, help="0 means use all rolling windows.")
+
+    parser.add_argument("--initial-amount", type=float, default=1_000_000)
+    parser.add_argument("--penalty-coef", type=float, default=0.05)
+
+    parser.add_argument("--net-dims", type=str, default="128,64", help="Comma-separated, e.g. 256,256")
+    parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--target-step", type=int, default=2000)
+    parser.add_argument("--break-step", type=int, default=40000)
+
+    parser.add_argument("--checkpoint-root", type=str, default="./checkpoints")
+    parser.add_argument("--warm-start", action="store_true", help="Continue model weights across windows.")
+    parser.add_argument(
+        "--reset-warm-start",
+        action="store_true",
+        help="If set with --warm-start, clear shared warm-start checkpoint at first window.",
+    )
+    parser.add_argument("--output-csv", type=str, default="ddpg_rolling_results_v2.csv")
+    return parser.parse_args()
+
+
 # -----------------------------
 # Main: rolling window training + inference
 # -----------------------------
 if __name__ == "__main__":
-    df_raw = prepare_data()
+    cli = parse_args()
+
+    net_dims = parse_net_dims(cli.net_dims)
+
+    df_raw = prepare_data(
+        cache_file=cli.cache_file,
+        TRAIN_START_DATE=cli.train_start,
+        TEST_END_DATE=cli.test_end,
+    )
     if df_raw is None or df_raw.empty:
         raise FileNotFoundError(
             "Could not load cache file. "
@@ -572,9 +634,9 @@ if __name__ == "__main__":
     stock_dimension = len(df["tic"].unique())
     ALL_INDICATORS = DEFAULT_INDICATORS
 
-    TRAIN_WINDOW = 252
-    VAL_WINDOW = 20
-    TEST_WINDOW = 20
+    TRAIN_WINDOW = int(cli.train_window)
+    VAL_WINDOW = int(cli.val_window)
+    TEST_WINDOW = int(cli.test_window)
 
     min_required_days = TRAIN_WINDOW + VAL_WINDOW + TEST_WINDOW
     if len(unique_dates) < min_required_days:
@@ -584,8 +646,12 @@ if __name__ == "__main__":
         )
 
     all_test_results = []
+    shared_warmstart_dir = os.path.join(cli.checkpoint_root, "ddpg_warmstart_shared")
 
-    for i in range(TRAIN_WINDOW + VAL_WINDOW, len(unique_dates) - TEST_WINDOW + 1, TEST_WINDOW):
+    for window_seq, i in enumerate(range(TRAIN_WINDOW + VAL_WINDOW, len(unique_dates) - TEST_WINDOW + 1, TEST_WINDOW)):
+        if int(cli.max_windows) > 0 and window_seq >= int(cli.max_windows):
+            break
+
         train_dates = unique_dates[i - TRAIN_WINDOW - VAL_WINDOW : i - VAL_WINDOW]
         test_dates = unique_dates[i : i + TEST_WINDOW]
 
@@ -617,20 +683,48 @@ if __name__ == "__main__":
             "action_dim": stock_dimension,
             "if_discrete": False,
             "target_return": 10.0,
+            "penalty_coef": float(cli.penalty_coef),
         }
 
         print(f"\n>>> Rolling Window: {train_dates[0]} to {test_dates[-1]}")
 
         try:
-            cwd_path = f"./checkpoints/ddpg_window_{i}"
+            if cli.warm_start:
+                cwd_path = shared_warmstart_dir
+                remove_flag = bool(cli.reset_warm_start and window_seq == 0)
+            else:
+                cwd_path = os.path.join(cli.checkpoint_root, f"ddpg_window_{i}")
+                remove_flag = True
             os.makedirs(cwd_path, exist_ok=True)
 
-            args = setup_ddpg_args(env_params, cwd_path)
+            args = setup_ddpg_args(
+                env_params,
+                cwd_path,
+                net_dims=net_dims,
+                learning_rate=cli.learning_rate,
+                batch_size=cli.batch_size,
+                target_step=cli.target_step,
+                break_step=cli.break_step,
+                if_remove=remove_flag,
+            )
 
             print("[-->] Starting DDPG Agent Training...")
             train_agent(args)
 
-            res = real_test_inference(test_df, stock_dimension, ALL_INDICATORS, args)
+            res = real_test_inference(
+                test_df,
+                stock_dimension,
+                ALL_INDICATORS,
+                args,
+                initial_amount=cli.initial_amount,
+                penalty_coef=cli.penalty_coef,
+            )
+            res["window_seq"] = window_seq
+            res["window_id"] = i
+            res["window_train_start"] = train_dates[0]
+            res["window_train_end"] = train_dates[-1]
+            res["window_test_start"] = test_dates[0]
+            res["window_test_end"] = test_dates[-1]
             all_test_results.append(res)
 
         except Exception as e:
@@ -641,7 +735,7 @@ if __name__ == "__main__":
             continue
 
     if all_test_results:
-        pd.concat(all_test_results).reset_index(drop=True).to_csv("ddpg_rolling_results_v2.csv", index=False)
-        print("\n[SUCCESS] Backtest V2 complete! File saved as ddpg_rolling_results_v2.csv")
+        pd.concat(all_test_results).reset_index(drop=True).to_csv(cli.output_csv, index=False)
+        print(f"\n[SUCCESS] Backtest complete! File saved as {cli.output_csv}")
     else:
         raise RuntimeError("All rolling windows failed; no backtest results were produced.")

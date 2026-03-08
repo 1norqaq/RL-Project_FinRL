@@ -13,6 +13,13 @@ checkpoints/
 *.jpeg
 !assets/
 
+# Ignore training/runtime logs
+*.log
+
+# Ignore local ablation experiment folders
+ablation_runs/
+ablation_quick*/
+
 # ==========================================
 # 2. Python Caches & Virtual Environments
 # ==========================================
