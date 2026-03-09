@@ -11,15 +11,11 @@ print("[✓] ElegantRL 导入完成 - 使用 AgentDQN")
 # 3. 核心：NumPy 极速版离散高频环境 (解决采样瓶颈)
 # ---------------------------------------------------------
 class FastDiscreteCryptoEnv(gym.Env):
-    """
-    高频交易环境：将 DataFrame 转换为 NumPy 数组以获得极速采样性能
-    动作空间: 0(卖出) | 1(持有) | 2(买入)
-    """
     def __init__(self, df, indicators, initial_amount=1000000, hmax=5, cost_pct=0.0002, env_name="FastCryptoEnv", **kwargs):
         super().__init__()
         self.env_name = env_name
         
-        # 将 DataFrame 提前转换为 NumPy 矩阵，消除 CPU 索引瓶颈
+        # 将 DataFrame 提前转换为 NumPy 矩阵，消除 CPU 索引瓶颈！
         self.prices = df['close'].values.astype(np.float32)
         self.features = df[indicators].values.astype(np.float32)
         self.max_step = len(df) - 1
@@ -27,6 +23,7 @@ class FastDiscreteCryptoEnv(gym.Env):
         self.initial_amount = initial_amount
         self.hmax = hmax
         self.cost_pct = cost_pct
+        self.price_scale = max(float(self.prices[0]), 1.0)
         
         # 动作空间：0(卖出), 1(持有), 2(买入)
         self.action_space = gym.spaces.Discrete(3)
@@ -43,7 +40,6 @@ class FastDiscreteCryptoEnv(gym.Env):
         self.asset_memory = []
         
     def reset(self, seed=None, options=None):
-        """重置环境到初始状态"""
         self.day = 0
         self.balance = self.initial_amount
         self.shares = 0
@@ -51,12 +47,14 @@ class FastDiscreteCryptoEnv(gym.Env):
         return self._get_obs(), {}
         
     def _get_obs(self):
-        """获取当前观测状态"""
-        obs = np.concatenate(([self.balance, self.prices[self.day], self.shares], self.features[self.day]))
+        # 对核心账户变量做尺度归一化，避免大数值淹没特征信号
+        norm_balance = self.balance / self.initial_amount
+        norm_price = self.prices[self.day] / self.price_scale
+        norm_shares = self.shares / max(float(self.hmax), 1.0)
+        obs = np.concatenate(([norm_balance, norm_price, norm_shares], self.features[self.day]))
         return obs.astype(np.float32)
         
     def step(self, action):
-        """执行一步动作"""
         self.day += 1
         if self.day >= self.max_step:
             return self._get_obs(), 0.0, True, False, {}
@@ -65,10 +63,10 @@ class FastDiscreteCryptoEnv(gym.Env):
         trade_shares = 0
         
         # 动作执行逻辑
-        if action == 0 and self.shares > 0:  # 卖出
+        if action == 0 and self.shares > 0: # 卖出
             trade_shares = -min(self.shares, self.hmax)
-        elif action == 2:  # 买入
-            # 防除零护盾：如果碰到异常脏数据(价格为0)，直接放弃买入
+        elif action == 2: # 买入
+            # 👇 防除零护盾：如果碰到异常脏数据(价格为0)，直接放弃买入，防止引发 OverflowError
             if price > 0:
                 max_buy = int(self.balance / (price * (1 + self.cost_pct)))
                 trade_shares = min(max_buy, self.hmax)
@@ -84,11 +82,16 @@ class FastDiscreteCryptoEnv(gym.Env):
         # 计算奖励 (资产净值变化)
         current_asset = self.balance + self.shares * price
         prev_asset = self.asset_memory[-1]
-        reward = current_asset - prev_asset
+        reward = (current_asset - prev_asset) / prev_asset  # 使用相对收益率
+
+        # 空仓且没有任何有效交易时给微弱惩罚，避免策略坍塌到“永不操作”
+        if self.shares == 0 and trade_shares == 0:
+            reward -= 1e-4
+
         self.asset_memory.append(current_asset)
         
         # Reward 缩放，帮助神经网络收敛
-        reward = reward * 1e-4
+        reward = float(np.clip(reward * 100, -1.0, 1.0))  # 缩放并裁剪，稳定Q学习
         done = self.day >= self.max_step
         
-        return self._get_obs(), float(reward), done, False, {}
+        return self._get_obs(), reward, done, False, {}
