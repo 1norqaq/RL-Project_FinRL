@@ -4,6 +4,10 @@ checkpoints/
 
 # Ignore generated data files and backtest results
 *.csv
+# Keep stock logs CSV files versioned
+!logs/
+!logs/stock/
+!logs/stock/*.csv
 # If you want to share the cleaned cache dataset on GitHub, uncomment the line below
 # !finrl_dow30_cache.csv
 
