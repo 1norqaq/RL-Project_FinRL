@@ -208,7 +208,7 @@ def split_train_test(df,
                      TRAIN_START_DATE='2010-01-07',
                      TRAIN_END_DATE='2023-10-24',
                      TEST_START_DATE='2023-10-25',
-                     TEST_END_DATE='2023-11-21'):
+                     TEST_END_DATE='2023-11-22'):
     df['date'] = pd.to_datetime(df['date'])
     df_train = df[(df['date'] >= TRAIN_START_DATE) & (df['date'] <= TRAIN_END_DATE)].copy()
     df_test = df[(df['date'] >= TEST_START_DATE) & (df['date'] <= TEST_END_DATE)].copy()
