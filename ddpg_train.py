@@ -595,14 +595,14 @@ def parse_args():
     parser.add_argument("--target-step", type=int, default=2000)
     parser.add_argument("--break-step", type=int, default=40000)
 
-    parser.add_argument("--checkpoint-root", type=str, default="./checkpoints")
+    parser.add_argument("--checkpoint-root", type=str, default="./checkpoints/ddpg")
     parser.add_argument("--warm-start", action="store_true", help="Continue model weights across windows.")
     parser.add_argument(
         "--reset-warm-start",
         action="store_true",
         help="If set with --warm-start, clear shared warm-start checkpoint at first window.",
     )
-    parser.add_argument("--output-csv", type=str, default="ddpg_rolling_results_v2.csv")
+    parser.add_argument("--output-csv", type=str, default="./logs/ddpg/ddpg_rolling_results_v2.csv")
     return parser.parse_args()
 
 
@@ -735,6 +735,7 @@ if __name__ == "__main__":
             continue
 
     if all_test_results:
+        os.makedirs(os.path.dirname(cli.output_csv) or ".", exist_ok=True)
         pd.concat(all_test_results).reset_index(drop=True).to_csv(cli.output_csv, index=False)
         print(f"\n[SUCCESS] Backtest complete! File saved as {cli.output_csv}")
     else:

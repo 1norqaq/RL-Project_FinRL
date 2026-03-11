@@ -14,6 +14,12 @@ import yfinance as yf
 warnings.filterwarnings("ignore")
 
 
+def ensure_parent_dir(path):
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+
 def calculate_metrics(series):
     values = pd.Series(series).dropna()
     if len(values) < 2:
@@ -93,6 +99,7 @@ def fetch_benchmark_with_retry(start_date, end_date, cache_file="benchmark_dji_c
                         .sort_values("Date")
                         .reset_index(drop=True)
                     )
+                ensure_parent_dir(cache_file)
                 benchmark.to_csv(cache_file, index=False)
                 period = load_cached_benchmark(cache_file, start_date, end_date)
                 if not period.empty:
@@ -235,12 +242,12 @@ def format_metrics_row(name, series):
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate DDPG rolling-window results with fair baselines.")
-    parser.add_argument("--result-file", type=str, default="ddpg_rolling_results_v2.csv")
+    parser.add_argument("--result-file", type=str, default="./logs/ddpg/ddpg_rolling_results_v2.csv")
     parser.add_argument("--window-len", type=int, default=20)
-    parser.add_argument("--benchmark-cache", type=str, default="benchmark_dji_cache.csv")
-    parser.add_argument("--out-curve-csv", type=str, default="ddpg_evaluation_curves.csv")
-    parser.add_argument("--out-metrics-csv", type=str, default="ddpg_evaluation_metrics.csv")
-    parser.add_argument("--out-plot", type=str, default="ddpg_backtest_performance_fair.png")
+    parser.add_argument("--benchmark-cache", type=str, default="./data/benchmark_dji_cache.csv")
+    parser.add_argument("--out-curve-csv", type=str, default="./logs/ddpg/ddpg_evaluation_curves.csv")
+    parser.add_argument("--out-metrics-csv", type=str, default="./logs/ddpg/ddpg_evaluation_metrics.csv")
+    parser.add_argument("--out-plot", type=str, default="./logs/ddpg/ddpg_backtest_performance_fair.png")
     args = parser.parse_args()
 
     try:
@@ -299,6 +306,7 @@ def main():
             metrics_rows.append(format_metrics_row("EqualWeight (rolling compounded)", df["equal_weight_compounded"]))
 
         metrics_df = pd.DataFrame(metrics_rows)
+        ensure_parent_dir(args.out_metrics_csv)
         metrics_df.to_csv(args.out_metrics_csv, index=False)
 
         print("\n" + "=" * 78)
@@ -326,6 +334,7 @@ def main():
             "equal_weight_compounded",
         ]
         existing_cols = [c for c in export_cols if c in df.columns]
+        ensure_parent_dir(args.out_curve_csv)
         df[existing_cols].to_csv(args.out_curve_csv, index=False)
 
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 9), sharex=True)
@@ -354,6 +363,7 @@ def main():
         ax2.legend(loc="upper left")
 
         plt.tight_layout()
+        ensure_parent_dir(args.out_plot)
         plt.savefig(args.out_plot, dpi=300)
         print(f"\n[+] Saved fair evaluation plot: '{args.out_plot}'")
         print(f"[+] Saved curve data: '{args.out_curve_csv}'")

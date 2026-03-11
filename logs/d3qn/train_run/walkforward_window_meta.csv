@@ -1,0 +1,2 @@
+window_id,window_dir,selected_checkpoint,warm_start_from,agent_family,train_date_start,train_date_end,val_date_start,val_date_end,test_date_start,test_date_end
+0,./checkpoints/d3qn_crypto_runs\train_run,./checkpoints/d3qn_crypto_runs\train_run\actor__000000241152_-0007.649.pt,,d3qn,2021-04-13 05:06:07.123831+00:00,2021-04-17 00:28:57.281751+00:00,2021-04-17 00:28:58.281751+00:00,2021-04-17 00:31:57.281751+00:00,2021-04-17 00:31:58.281751+00:00,2021-04-17 00:38:02.281751+00:00

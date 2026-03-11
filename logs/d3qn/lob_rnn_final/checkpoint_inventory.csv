@@ -1,0 +1,6 @@
+checkpoint,filename,bytes,mtime
+./checkpoints/d3qn_crypto_runs\lob_rnn_final\actor__000000000512_-0000.163.pt,actor__000000000512_-0000.163.pt,157598,2026-03-08T23:54:24.461138
+./checkpoints/d3qn_crypto_runs\lob_rnn_final\cri.pth,cri.pth,156246,2026-03-08T23:59:38.174616
+./checkpoints/d3qn_crypto_runs\lob_rnn_final\cri_target.pth,cri_target.pth,157026,2026-03-08T23:59:38.174616
+./checkpoints/d3qn_crypto_runs\lob_rnn_final\act.pth,act.pth,156246,2026-03-08T23:59:38.184599
+./checkpoints/d3qn_crypto_runs\lob_rnn_final\cri_optimizer.pth,cri_optimizer.pth,459594,2026-03-08T23:59:38.184599

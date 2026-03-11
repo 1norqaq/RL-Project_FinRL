@@ -1,0 +1,3 @@
+checkpoint,cumulative_return,annualized_sharpe,max_drawdown,drawdown_abs,composite_score,selected
+./checkpoints/d3qn_crypto_runs\lob_rnn_final\actor__000000000512_-0000.163.pt,0.0,0.0,0.0,0.0,0.0,True
+./checkpoints/d3qn_crypto_runs\lob_rnn_final\act.pth,-0.07109293728969579,-81.33441617846492,-0.07444205325327113,0.07444205325327113,-82.40718367373641,False
