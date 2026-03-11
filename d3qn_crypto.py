@@ -16,23 +16,52 @@ import pandas as pd
 import torch
 import yfinance as yf
 
-from elegantrl.agents import AgentD3QN
+DEPENDENCY_IMPORT_ERRORS: List[str] = []
+AgentD3QN = None
+AgentDQN = None
+AgentDoubleDQN = None
+train_agent = None
+Arguments = None
 
 try:
-    from elegantrl.agents import AgentDQN
-except ImportError:
+    from elegantrl.agents import AgentD3QN as _AgentD3QN
+
+    AgentD3QN = _AgentD3QN
+except Exception as exc:
+    DEPENDENCY_IMPORT_ERRORS.append(f"ElegantRL AgentD3QN import failed: {exc}")
+
+try:
+    from elegantrl.agents import AgentDQN as _AgentDQN
+
+    AgentDQN = _AgentDQN
+except Exception:
     AgentDQN = None
 
 try:
-    from elegantrl.agents import AgentDoubleDQN
-except ImportError:
+    from elegantrl.agents import AgentDoubleDQN as _AgentDoubleDQN
+
+    AgentDoubleDQN = _AgentDoubleDQN
+except Exception:
     AgentDoubleDQN = None
-from elegantrl.train.run import train_agent
 
 try:
-    from elegantrl.train.config import Config as Arguments
-except ImportError:
-    from elegantrl.train.config import Arguments
+    from elegantrl.train.run import train_agent as _train_agent
+
+    train_agent = _train_agent
+except Exception as exc:
+    DEPENDENCY_IMPORT_ERRORS.append(f"ElegantRL train import failed: {exc}")
+
+try:
+    from elegantrl.train.config import Config as _Arguments
+
+    Arguments = _Arguments
+except Exception:
+    try:
+        from elegantrl.train.config import Arguments as _Arguments
+
+        Arguments = _Arguments
+    except Exception as exc:
+        DEPENDENCY_IMPORT_ERRORS.append(f"ElegantRL config import failed: {exc}")
 
 
 def parse_net_dims(text: str) -> Tuple[int, ...]:
@@ -56,12 +85,32 @@ def parse_position_levels(text: str) -> Tuple[float, ...]:
 
 
 def get_agent_registry() -> Dict[str, Any]:
-    registry = {"d3qn": AgentD3QN}
+    registry = {}
+    if AgentD3QN is not None:
+        registry["d3qn"] = AgentD3QN
     if AgentDQN is not None:
         registry["dqn"] = AgentDQN
     if AgentDoubleDQN is not None:
         registry["double_dqn"] = AgentDoubleDQN
     return registry
+
+
+def ensure_d3qn_dependencies() -> None:
+    registry = get_agent_registry()
+    missing = []
+    if not registry:
+        missing.append("elegantrl-agents")
+    if train_agent is None:
+        missing.append("elegantrl-train-run")
+    if Arguments is None:
+        missing.append("elegantrl-config")
+    if missing:
+        detail = "; ".join(DEPENDENCY_IMPORT_ERRORS) if DEPENDENCY_IMPORT_ERRORS else "missing imports"
+        raise ImportError(
+            "d3qn_crypto.py missing runtime dependencies: "
+            f"{', '.join(missing)}. Details: {detail}. "
+            "Install dependencies from requirements.txt and retry."
+        )
 
 
 def resolve_agent_families(agent_family: str) -> List[str]:
@@ -1700,8 +1749,8 @@ def parse_args():
         choices=["auto", "none", "cryptodatadownload"],
         help="Data fallback source when Yahoo is unavailable.",
     )
-    parser.add_argument("--lob-csv-file", type=str, default=r"C:\Users\FYufa\Downloads\BTC_1sec.csv")
-    parser.add_argument("--lob-rnn-file", type=str, default=r"C:\Users\FYufa\Downloads\BTC_1sec_predict.npy")
+    parser.add_argument("--lob-csv-file", type=str, default="./data/BTC_1sec.csv")
+    parser.add_argument("--lob-rnn-file", type=str, default="./data/BTC_1sec_predict.npy")
     parser.add_argument("--lob-rnn-pretrain-ratio", type=float, default=0.6)
     parser.add_argument("--lob-stride", type=int, default=1, help="Use every n-th row from LOB data.")
     parser.add_argument("--lob-max-rows", type=int, default=0, help="0 means use all rows after pretrain cut.")
@@ -2063,6 +2112,7 @@ def run_walk_forward(
 
 def main():
     cli = parse_args()
+    ensure_d3qn_dependencies()
     set_global_seed(int(cli.seed))
 
     if str(cli.run_tag).strip() == "":

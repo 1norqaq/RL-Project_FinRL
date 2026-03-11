@@ -13,6 +13,8 @@ try:
 except ImportError:
     import gym
 
+DEPENDENCY_IMPORT_ERRORS = []
+
 # -----------------------------
 # Compatibility patches
 # -----------------------------
@@ -41,25 +43,64 @@ yf.download = patched_download
 # -----------------------------
 # Imports from FinRL + ElegantRL
 # -----------------------------
-from finrl.meta.preprocessor.yahoodownloader import YahooDownloader
-from finrl.config_tickers import DOW_30_TICKER
-from finrl.meta.env_stock_trading.env_stocktrading import StockTradingEnv
-from elegantrl.train.run import train_agent
+YahooDownloader = None
+DOW_30_TICKER = None
+StockTradingEnv = None
+train_agent = None
+Arguments = None
+AgentDDPG = None
 
 try:
-    from elegantrl.train.config import Config as Arguments
-except ImportError:
-    from elegantrl.train.config import Arguments
+    from finrl.meta.preprocessor.yahoodownloader import YahooDownloader as _YahooDownloader
+    from finrl.config_tickers import DOW_30_TICKER as _DOW_30_TICKER
+    from finrl.meta.env_stock_trading.env_stocktrading import StockTradingEnv as _StockTradingEnv
 
-# Agent import with robust fallback (in case of naming differences across ElegantRL versions)
+    YahooDownloader = _YahooDownloader
+    DOW_30_TICKER = _DOW_30_TICKER
+    StockTradingEnv = _StockTradingEnv
+except Exception as exc:
+    DEPENDENCY_IMPORT_ERRORS.append(f"FinRL import failed: {exc}")
+
 try:
-    from elegantrl.agents import AgentDDPG
-except ImportError:
-    # If your ElegantRL version uses a different name, fail loudly with a clear message
-    raise ImportError(
-        "Could not import AgentDDPG from elegantrl.agents. "
-        "Please check your installed ElegantRL version and agent class names."
-    )
+    from elegantrl.train.run import train_agent as _train_agent
+
+    train_agent = _train_agent
+except Exception as exc:
+    DEPENDENCY_IMPORT_ERRORS.append(f"ElegantRL train import failed: {exc}")
+
+try:
+    from elegantrl.train.config import Config as _Arguments
+
+    Arguments = _Arguments
+except Exception:
+    try:
+        from elegantrl.train.config import Arguments as _Arguments
+
+        Arguments = _Arguments
+    except Exception as exc:
+        DEPENDENCY_IMPORT_ERRORS.append(f"ElegantRL config import failed: {exc}")
+
+try:
+    from elegantrl.agents import AgentDDPG as _AgentDDPG
+
+    AgentDDPG = _AgentDDPG
+except Exception as exc:
+    DEPENDENCY_IMPORT_ERRORS.append(f"ElegantRL AgentDDPG import failed: {exc}")
+
+
+def ensure_ddpg_dependencies() -> None:
+    missing = []
+    if StockTradingEnv is None or YahooDownloader is None or DOW_30_TICKER is None:
+        missing.append("finrl")
+    if train_agent is None or Arguments is None or AgentDDPG is None:
+        missing.append("elegantrl")
+    if missing:
+        detail = "; ".join(DEPENDENCY_IMPORT_ERRORS) if DEPENDENCY_IMPORT_ERRORS else "missing imports"
+        raise ImportError(
+            "ddpg_train.py requires the following packages: "
+            f"{', '.join(sorted(set(missing)))}. Details: {detail}. "
+            "Install dependencies from requirements.txt and retry."
+        )
 
 
 # -----------------------------
@@ -611,6 +652,7 @@ def parse_args():
 # -----------------------------
 if __name__ == "__main__":
     cli = parse_args()
+    ensure_ddpg_dependencies()
 
     net_dims = parse_net_dims(cli.net_dims)
 
@@ -671,7 +713,7 @@ if __name__ == "__main__":
             "df": train_df,
             "stock_dim": stock_dimension,
             "hmax": 100,
-            "initial_amount": 1000000,
+            "initial_amount": float(cli.initial_amount),
             "num_stock_shares": [0] * stock_dimension,
             "buy_cost_pct": [0.001] * stock_dimension,
             "sell_cost_pct": [0.001] * stock_dimension,

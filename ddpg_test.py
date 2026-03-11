@@ -144,6 +144,9 @@ def load_result_df(result_file, default_window_len):
     if not os.path.exists(result_file):
         raise FileNotFoundError(f"Result file '{result_file}' not found. Run ddpg_train.py first.")
 
+    if int(default_window_len) <= 0:
+        raise ValueError(f"--window-len must be > 0, got {default_window_len}")
+
     df = pd.read_csv(result_file)
     required_columns = {"date", "account_value"}
     missing_columns = sorted(required_columns.difference(df.columns))
@@ -151,6 +154,10 @@ def load_result_df(result_file, default_window_len):
         raise ValueError(f"Result file '{result_file}' is missing required columns: {missing_columns}")
 
     df["date"] = pd.to_datetime(df["date"])
+    df["account_value"] = pd.to_numeric(df["account_value"], errors="coerce")
+    df = df.dropna(subset=["date", "account_value"])
+    if df.empty:
+        raise ValueError(f"Result file '{result_file}' has no valid rows after parsing date/account_value.")
     df = df.sort_values("date").drop_duplicates(subset=["date"]).reset_index(drop=True)
 
     if "window_seq" in df.columns:
@@ -248,6 +255,7 @@ def main():
     parser.add_argument("--out-curve-csv", type=str, default="./logs/ddpg/ddpg_evaluation_curves.csv")
     parser.add_argument("--out-metrics-csv", type=str, default="./logs/ddpg/ddpg_evaluation_metrics.csv")
     parser.add_argument("--out-plot", type=str, default="./logs/ddpg/ddpg_backtest_performance_fair.png")
+    parser.add_argument("--show-plot", action="store_true", help="Display the plot window after saving.")
     args = parser.parse_args()
 
     try:
@@ -368,7 +376,10 @@ def main():
         print(f"\n[+] Saved fair evaluation plot: '{args.out_plot}'")
         print(f"[+] Saved curve data: '{args.out_curve_csv}'")
         print(f"[+] Saved metrics: '{args.out_metrics_csv}'")
-        plt.show()
+        if args.show_plot:
+            plt.show()
+        else:
+            plt.close(fig)
 
     except Exception as e:
         print(f"[ERROR] Evaluation failed: {e}")
