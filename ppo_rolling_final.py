@@ -80,7 +80,7 @@ class ElegantFinRLWrapper(gym.Wrapper):
         self.max_step = len(df.index.unique())
 
         self.prev_action = np.zeros(action_dim)
-        self.penalty_coef = 0.0001
+        self.penalty_coef = 0.0
 
     def reset(self):
         self.prev_action = np.zeros(self.action_dim)
