@@ -209,11 +209,16 @@ class ElegantFinRLWrapper(gym.Wrapper):
 
         if len(res) == 5:
             obs, reward, term, trunc, info = res
-            modified_reward = float(reward) - float(penalty)
+            # print("[DEBUG] Step Reward: {:.4f}, Action Penalty: {:.4f}, Total Reward: {:.4f}".format(
+            #     reward, penalty, reward - penalty
+            # ))
+            # modified_reward = float(reward) - float(penalty)
+            modified_reward = float(reward)
             return np.array(obs, dtype=np.float32), modified_reward, term, trunc, info
         else:
             obs, reward, done, info = res
-            modified_reward = float(reward) - float(penalty)
+            # modified_reward = float(reward) - float(penalty)
+            modified_reward = float(reward)
             return np.array(obs, dtype=np.float32), modified_reward, done, False, info
 
 print("[✓] FastContinuousCryptoEnv & ElegantFinRLWrapper classes defined!")

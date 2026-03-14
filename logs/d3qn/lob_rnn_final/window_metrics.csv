@@ -1,2 +1,0 @@
-window_id,d3qn_return,d3qn_sharpe,d3qn_max_drawdown,buyhold_return,buyhold_sharpe,buyhold_max_drawdown,sma_return,sma_sharpe,sma_max_drawdown,constmix50_return,constmix50_sharpe,constmix50_max_drawdown,volmom_return,volmom_sharpe,volmom_max_drawdown,d3qn_avg_turnover_per_step,d3qn_total_trade_cost
-0,0.0,0.0,0.0,0.015492619002844155,21.149451184720043,-0.015403711682566268,-0.8880716312599266,-931.8112009779609,-0.8880716312599266,0.007072745128979818,19.294483234878495,-0.007747779470517857,-0.9864900361897763,-2073.624787123055,-0.9864900361897763,0.0,0.0
